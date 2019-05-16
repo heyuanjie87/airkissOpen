@@ -8,7 +8,7 @@ QT       += core gui
 
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets network
 
-DEFINES +=AIRKISS_80211HDR_NONE
+DEFINES += AIRKISS_LOG_ENABLE
 TARGET = airkiss
 TEMPLATE = app
 DESTDIR = ../../doc

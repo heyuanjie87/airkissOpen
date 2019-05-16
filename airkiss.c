@@ -153,7 +153,7 @@ static int akseq_input(akloc_context_t *lc, uint8_t *d, int n, int seqi)
 {
     int i;
     int ret;
-
+AKLOG_D("seqi %d", seqi);
     if (lc->seq[seqi] != seqi)
     {
         int pos;
@@ -649,6 +649,15 @@ static int ak_waitfor_datafield(akloc_context_t *lc, uint16_t len, int nossid)
     if (udplen < 0x80)
     {
         return ret;
+    }
+
+    if (udplen & 0x100)
+    {
+        AKLOG_D("<%X> %c", udplen, udplen&0xff);
+    }
+    else
+    {
+        AKLOG_D("<%X>", udplen);
     }
 
     n = lc->prslen & 0x03;
