@@ -53,3 +53,24 @@ wifisoc: w600
 [13:25:40.562] airkiss locked chn 9 
 [13:25:43.062] pwd 1234567890qwe ssid FAST_157
 ```
+
+```
+2019-05-18
+
+/* 解析丢包严重样本cap2.txt成功 */
+
+/* 路由型号: tplink(WR842N) 周围2个通道有广播 */
+[19:20:41.357] 0mairkiss-1.0.0-open
+[19:20:41.357] tm 104 on chn 12
+[19:21:08.668] tm 200 on chn 12
+[19:21:09.170] airkiss locked chn 13
+[19:21:09.289] tm 200 on chn 13
+[19:21:11.537] pwd 1234567890wwetyyujjjj ssid TP-LINK_128E
+
+[19:25:49.624] 0mairkiss-1.0.0-open
+[19:25:49.624] tm 200 on chn 12
+[19:25:50.819] airkiss locked chn 13
+[19:25:50.929] tm 200 on chn 13
+[19:25:53.453] pwd 1234567890wwetyyujjjj ssid TP-LINK_128E
+
+```

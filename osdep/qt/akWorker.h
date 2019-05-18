@@ -15,6 +15,7 @@ public:
     ~akWorker();
 
     void start(QString file = "", bool nossid = true, short port = 10000);
+    QString genDataSeq(QString pwd, QString r, QString ssid, int baselen);
 
 signals:
     showMsg(QString m);

@@ -88,7 +88,7 @@ void MainWindow::on_pbparese_clicked()
         connect(wk, SIGNAL(finished()),
                 this, SLOT(workerExit()));
 
-        wk->start(file);
+        wk->start(file, ui->nossid->isChecked());
 
         ui->pbparese->setText(QString("停止"));
     }
@@ -115,4 +115,11 @@ void MainWindow::on_cbcmpe_toggled(bool checked)
 {
     if (wk)
         wk->cmpExit = checked;
+}
+
+void MainWindow::on_seqgen_clicked()
+{
+    QString str;
+
+
 }

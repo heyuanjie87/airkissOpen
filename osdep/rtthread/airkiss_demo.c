@@ -85,6 +85,8 @@ static int ak_recv(airkiss_context_t *ac, int ms, int *rcnt)
     {
         if (rt_mb_recv(&_bfready, (rt_ubase_t *)&buf, rt_tick_from_millisecond(10)) == 0)
         {
+            //rt_kprintf("%d\n", buf->fmlen);
+
             status = airkiss_recv(ac, buf->f, buf->fmlen);
             rt_list_insert_after(&_bflist, &buf->list);
             if (status != AIRKISS_STATUS_CONTINUE)
@@ -92,13 +94,16 @@ static int ak_recv(airkiss_context_t *ac, int ms, int *rcnt)
 
             (*rcnt)++;
             /* 收到数据奖励时间 */
-            if (ms < 100)
-                ms += 8;
+            if (ms < 140)
+                ms += 12;
+        }
+        else
+        {
+            /* 超时后进行时间惩罚 */
+            if (ms > 40)
+                ms -= 2;
         }
 
-        /* 超时后进行时间惩罚 */
-        if (ms > 40)
-            ms -= 2;
         max = rt_tick_from_millisecond(ms);
         if ((rt_tick_get() - st) > max)
             break;
@@ -117,7 +122,7 @@ static int ak_recv_chn(struct rt_wlan_device *dev,
     rt_wlan_dev_set_channel(dev, chn->n);
     airkiss_change_channel(ac);
 
-    status = ak_recv(ac, 50 + chn->tm, &rcnt);
+    status = ak_recv(ac, chn->tm, &rcnt);
     if (status == AIRKISS_STATUS_CHANNEL_LOCKED)
     {
         rt_kprintf("airkiss locked chn %d\n", chn->n);
@@ -125,13 +130,13 @@ static int ak_recv_chn(struct rt_wlan_device *dev,
     }
 
     chn->cnt += rcnt;
-    t = chn->cnt * 8;
+    t = chn->cnt * chn->cnt * chn->cnt;
     if (t)
     {
-        if (t > 50)
-            t = 50;
-        chn->tm = t;
-        //rt_kprintf("tm %d on chn %d\n", chn->tm, chn->n);
+        if (t > 160)
+            t = 160;
+        chn->tm = 40 + t;
+        rt_kprintf("tm %d on chn %d\n", chn->tm, chn->n);
     }
 
     return status;
@@ -145,6 +150,7 @@ static void akchn_init(akchn_t *chn, int n)
     {
         chn[i].n = i + 1;
         chn[i].cnt = 0;
+        chn[i].tm = 20;
     }
 }
 
@@ -239,7 +245,7 @@ static void airkiss_thread(void *p)
     struct rt_wlan_device *dev;
     akbuf_t *pbuf;
     int n;
-    akchn_t chns[12];
+    akchn_t chns[13];
     int round = 80;
     airkiss_config_t acfg =
         {
@@ -264,14 +270,14 @@ static void airkiss_thread(void *p)
 
     rt_wlan_dev_enter_promisc(dev);
 
-    akchn_init(chns, 12);
+    akchn_init(chns, sizeof(chns) / sizeof(chns[0]));
 
     rt_kprintf("%s\n", airkiss_version());
 
     while (round-- > 0)
     {
         //rt_kprintf("ak round\n");
-        for (n = 0; n < 12; n++)
+        for (n = 0; n < sizeof(chns) / sizeof(chns[0]); n++)
         {
             if (ak_recv_chn(dev, &ac, &chns[n]) == AIRKISS_STATUS_COMPLETE)
             {
@@ -342,15 +348,22 @@ static void showakbuf(akbuf_t *buf, int mode)
 {
     char str[58];
     int i, pos = 0;
+    int fs = mode & 0x1f;
 
-    if (mode < 24 && mode >= 0)
+    if (fs < 24)
     {
-        for (i = mode; i < 24; i++)
+        for (i = fs; i < 24; i++)
         {
             rt_sprintf(str + pos, "%02X", buf->f[i]);
             pos += 2;
         }
         rt_sprintf(str + pos, ":%d\n", buf->fmlen);
+
+        if (mode & 0x80)
+        {
+            pos = rt_strlen(str) - 1;
+            rt_sprintf(str + pos, ":%d\n", rt_tick_get());
+        }
 
         rt_kprintf(str);
     }
@@ -377,7 +390,7 @@ static void airkiss_thread_cap(void *p)
     airkiss_context_t ac;
     struct rt_wlan_device *dev;
     akbuf_t *pbuf;
-    akchn_t chns[12];
+    akchn_t chns[14];
 
     if ((pbuf = ak_bufinit(AKDEMO_BUFSZ)) == RT_NULL)
     {
@@ -394,7 +407,7 @@ static void airkiss_thread_cap(void *p)
 
     rt_wlan_dev_enter_promisc(dev);
 
-    akchn_init(chns, 12);
+    akchn_init(chns, sizeof(chns) / sizeof(chns[0]));
 
     rt_kprintf("airkiss cap start\n");
 
@@ -463,8 +476,12 @@ static void airkiss(int c, char **v)
     {
         switch (c)
         {
+        case 5:
+            if (v[4][0] == 't')
+                cap.omode = 0x80;
+            break;
         case 4:
-            cap.omode = atoi(&(v[3][1]));
+            cap.omode |= atoi(&(v[3][1]));
             break;
         case 3:
             chn = atoi(v[2]);
@@ -486,7 +503,7 @@ static void airkiss(int c, char **v)
         if (chn == 0)
         {
             cap.schn = 1;
-            cap.echn = 12;
+            cap.echn = 13;
         }
         else
         {

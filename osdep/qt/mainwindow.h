@@ -32,6 +32,8 @@ private slots:
 
     void on_cbcmpe_toggled(bool checked);
 
+    void on_seqgen_clicked();
+
 private:
     Ui::MainWindow *ui;
     akWorker *wk;

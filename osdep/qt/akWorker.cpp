@@ -106,15 +106,23 @@ void akWorker::fromfile()
         if (fm.size() > 0)
             pf = fm.data();
 
-        status = airkiss_recv(&ac, pf, len);
+        if (_nossid)
+            status = airkiss_recv_nossid(&ac, pf, len);
+        else
+            status = airkiss_recv(&ac, pf, len);
+
         if (status == AIRKISS_STATUS_COMPLETE)
         {
             airkiss_result_t res;
             QString str;
 
             airkiss_get_result(&ac, &res);
-            str = str.sprintf("ssid: %s, pwd: %s\n", res.ssid, res.pwd);
-            emit showMsg(str);
+            if (_nossid)
+                str = str.sprintf("ssidcrc: %X, pwd: %s\n", res.ssid_crc, res.pwd);
+            else
+                str = str.sprintf("ssid: %s, pwd: %s\n", res.ssid, res.pwd);
+
+             emit showMsg(str);
             break;
         }
         else if (status == AIRKISS_STATUS_CHANNEL_LOCKED)
@@ -132,6 +140,7 @@ void akWorker::fromudp_bc()
     char buf[1024];
     airkiss_context_t ac;
     int status = -1;
+    airkiss_config_t acfg = {0,0,0,0};
 
     ser = new QUdpSocket;
     if (!ser->bind(QHostAddress::AnyIPv4, _port, QUdpSocket::ShareAddress))
@@ -140,7 +149,8 @@ void akWorker::fromudp_bc()
         goto _out;
     }
 
-    airkiss_init(&ac, NULL);
+    acfg.printf = msgprint;
+    airkiss_init(&ac, &acfg);
 
     while (isrun)
     {
@@ -154,6 +164,7 @@ void akWorker::fromudp_bc()
             {
                 QString s;
 
+                qDebug("%X", len);
                 s = s.sprintf("%X", len);
                 emit showMsg(s);
             }
@@ -194,4 +205,11 @@ void akWorker::run()
         fromfile();
 
     emit showMsg("退出解析");
+}
+
+QString akWorker::genDataSeq(QString pwd, QString r, QString ssid, int baselen)
+{
+    QString ret;
+
+    return ret;
 }
