@@ -40,6 +40,19 @@ typedef struct
 
 typedef struct
 {
+    akwire_seq_t ws;
+    uint8_t crc;
+    uint8_t ind;
+}akdatf_seq_t;
+
+typedef struct
+{
+    uint8_t crc;
+    uint8_t ind;
+}akdatf_header_t;
+
+typedef struct
+{
     uint8_t id[4];
 }akaddr_t;
 
@@ -57,10 +70,9 @@ typedef struct
 
 typedef struct
 {
-    akwire_seq_t ws;
-    uint8_t crc;
-    uint8_t ind;
-}akdatf_seq_t;
+    char data[16]; /* 保留后4个 */
+    uint8_t pos[16];
+}akdatf_conflict_t;
 
 typedef struct
 {
@@ -69,16 +81,18 @@ typedef struct
         akcode_t code2[1];
     } uc;
 
+    akdatf_conflict_t dcfl; /* 记录有冲突的数据 */
+    akwire_seq_t prews;
     akdatf_seq_t preseq;
     akdatf_seq_t curseq;
+    akdatf_header_t pendseq[10]; /* 未完成的序列 */
     akaddr_t locked;
 
     uint8_t seqstep;/* 序列增量 */
     uint8_t reclen;
     uint8_t state;
-    uint8_t nossid:4;
-    uint8_t crcok:4;
-    uint8_t seq[16];
+    uint8_t nossid;
+    uint8_t seq[16]; /* 标记已完成的序列 */
 
     char data[66];
     uint8_t random;
@@ -235,7 +249,6 @@ static int ak_get_datafield(akloc_context_t *lc, akcode_t *ac)
     seqi = ac->val[1] & 0x7f;
     if (seqi > (lc->prslen/4))
     {
-        AKLOG_D("data seqi[%X] err\n", ac->val[1]);
         return 0;
     }
 
@@ -444,17 +457,19 @@ static int ak_waitfor_prefixfield(akloc_context_t *lc, uint16_t len)
 static void akdata_dump(akloc_context_t *lc, uint8_t *f, uint16_t len)
 {
     uint8_t seq[2];
+    uint16_t dseq;
 
     seq[0] = f[22];
     seq[1] = f[23];
 
+    dseq = (seq[1] << 4) | (seq[0]>> 4);
     if (len & 0x100)
     {
-        AKLOG_D("%02X%02X %X %c", seq[0], seq[1], len, len & 0xff);
+        AKLOG_D("(%d) %X %c", dseq, len, len & 0xff);
     }
     else
     {
-        AKLOG_D("%02X%02X %X", seq[0], seq[1], len);
+        AKLOG_D("(%d) %X", dseq, len);
     }
 }
 #endif
@@ -482,171 +497,6 @@ static int ak_is_pwdrand_complete(akloc_context_t *lc)
     }
 
     return ret;
-}
-
-static int ak_get_datafield_try(akloc_context_t *lc, akdatf_seq_t *ds)
-{
-    int ret = 0;
-    int pos;
-    uint8_t seqi;
-
-    seqi = ds->ind & 0x7f;
-    if (lc->seq[seqi] == 0)
-    {
-        int size = 4;
-        char d[6] = {0};
-        int i;
-        uint8_t crc;
-
-        pos = seqi * 4;
-        size = lc->prslen - pos;
-        if (size > 4)
-            size = 4;
-
-        for (i = 0; i < size; i ++)
-        {
-            if (lc->data[pos + i] == 0)
-                return 0;
-        }
-
-        d[0] = seqi;
-        memcpy(&d[1], &lc->data[pos], size);
-        crc = airkiss_crc8((uint8_t*)d, size + 1) & 0x7f;
-        if (crc == (ds->crc & 0x7f))
-        {
-            lc->seq[seqi] = 1;
-            lc->reclen += size;
-            ret = 1;
-
-#ifdef AIRKISS_LOG_GTO_ENABLE
-            AKLOG_D("found data(%d, %d)[%X,%X,%X,%X]\n", seqi, size, d[1], d[2], d[3], d[4]);
-#endif
-        }
-    }
-
-    return ret;
-}
-
-static int ak_dataheader_input(akloc_context_t *lc, akdatf_seq_t *ds, uint16_t len, akwire_seq_t ws)
-{
-    int ret = 0;
-
-    if (ds->ws == 0)
-    {
-        ds->ws = ws;
-        ds->crc = len;
-    }
-    else
-    {
-        akwire_seq_t offs;
-
-        offs = (ws - ds->ws)/lc->seqstep;
-        if (offs < 2)
-        {
-            /* 正确的包头 */
-            ds->ind = len;
-            /* 保存它 */
-            AKLOC_DFSEQ_PREV(lc) = *ds;
-        }
-        else if (offs == 6)
-        {
-            /* 下一个包头 */
-            ds->ws = ws;
-            ds->crc = len;
-            ds->ind = 0;
-        }
-        else
-        {
-            /* 包头错误 */
-            ds->ws = 0;
-            ds->crc = 0;
-            ds->ind = 0;
-        }
-    }
-
-    return ret;
-}
-
-static int ak_seq_getpos(akloc_context_t *lc, akdatf_seq_t *ds, akwire_seq_t ws)
-{
-    int pos = -1;
-    akwire_seq_t off802;
-    int offmax;
-
-    /* 无效包头 */
-    if (ds->ind == 0)
-        return -1;
-
-    /* 与上个包头的80211帧偏差 */
-    off802 = ws - ds->ws;
-    off802 /= lc->seqstep;
-    /* 数据最大偏差 */
-    offmax = lc->prslen + ((lc->prslen + 3)/4) * 2;
-    if (off802 < offmax)
-    {
-        int i;
-
-        i = (off802 % 6) + ((off802 / 6) * 4);
-        if (i > 1)
-            pos = ((ds->ind & 0x7f) * 4) + i - 2;
-    }
-
-    return pos;
-}
-
-static int ak_databody_input(akloc_context_t *lc, akdatf_seq_t *ds, uint16_t len, akwire_seq_t ws)
-{
-    int ret = 0;
-
-    if (ds->ind != 0) /* 有包头 */
-    {
-        int seqi;
-
-        seqi = ds->ind & 0x7f;
-        if (lc->seq[seqi] == 0)
-        {
-            int pos;
-
-            pos = ak_seq_getpos(lc, ds, ws);
-            if (pos != -1)
-            {
-                lc->data[pos] = len & 0xFF;
-
-#ifdef AIRKISS_LOG_DIWSO_ENABLE
-                AKLOG_D("input(%d) %c", pos, lc->data[pos]);
-#endif
-                ak_get_datafield_try(lc, ds);
-            }
-         }  
-    }
-    else
-    {
-        memset(ds, 0, sizeof(*ds));
-    }
-
-    return ret;
-}
-
-static void ak_datainput_withwireseq(akloc_context_t *lc, uint8_t *f, uint16_t len)
-{
-    uint8_t *seq;
-    akwire_seq_t ws;
-    akdatf_seq_t *ds;
-
-    ds = &AKLOC_DFSEQ_CUR(lc);
-    ws = akwseq_make(f + 22);
-
-    if (len & 0x100)
-    {
-        ak_databody_input(lc, ds, len, ws);
-    }
-    else
-    {
-        ak_dataheader_input(lc, ds, len, ws);
-    }
-
-    if (lc->reclen == lc->prslen)
-        lc->state = AKSTATE_CMP;
 }
 
 static int ak_datainput_onlylength(akloc_context_t *lc, akcode_t *ac, uint16_t len)
@@ -694,6 +544,516 @@ static int ak_datainput_onlylength(akloc_context_t *lc, akcode_t *ac, uint16_t l
     return (ac->pos == n);
 }
 
+static akdatf_header_t* akseq_getpend(akloc_context_t *lc, uint8_t ind)
+{
+    akdatf_header_t* ret = 0;
+    unsigned i;
+
+    for (i = 0; i < sizeof(lc->pendseq)/sizeof(lc->pendseq[0]); i ++)
+    {
+        akdatf_header_t *p = &lc->pendseq[i];
+
+        if (p->ind == ind)
+        {
+            ret = p;
+            break;
+        }
+    }
+
+    return ret;
+}
+
+static int ak_pendinput_mark(akloc_context_t *lc, uint8_t ind)
+{
+    int ret = 0;
+    akdatf_header_t* pd;
+
+    pd = akseq_getpend(lc, ind);
+    if (pd)
+    {
+        int size, pos, i;
+        char d[6] = {0};
+        uint8_t crc;
+
+        ind = ind & 0x7f;
+        pos = ind * 4;
+        size = lc->prslen - pos;
+        if (size > 4)
+            size = 4;
+
+        for (i = 0; i < size; i ++)
+        {
+            if (lc->data[pos + i] == 0)
+                return 0;
+        }
+
+        d[0] = ind;
+        memcpy(&d[1], &lc->data[pos], size);
+        crc = airkiss_crc8((uint8_t*)d, size + 1) & 0x7f;
+        if (crc == (pd->crc & 0x7f))
+        {
+            memset(pd, 0, sizeof(*pd));
+            lc->seq[ind] = 1;
+            lc->reclen += size;
+            ret = 1;
+
+#ifdef AIRKISS_LOG_GDO_ENABLE
+            AKLOG_D("getdata-p(%d, %d)[%s]", ind, size, &d[1]);
+#endif
+        }
+    }
+
+    return ret;
+}
+
+static int ak_penddata_getpos(akloc_context_t *lc, akdatf_seq_t *ref, akwire_seq_t ws)
+{
+    int ret = -1;
+    uint8_t refind, ind;
+    int offs;
+
+    if (ws < ref->ws)
+    {//todo
+        AKLOG_D("ws-d overflow(%d, %d)", ws, ref->ws);
+    }
+    else
+    {
+        int maxoffs;
+        int fmpos;
+
+        offs = (ws - ref->ws)/lc->seqstep;
+        if ((offs % 6) < 2)
+            return -1;
+        maxoffs = lc->prslen + ((lc->prslen + 3)/4) * 2;
+        if (offs > maxoffs) /* 相差太大出错几率增大 */
+            return ret;
+
+        refind = ref->ind & 0x7f;
+        fmpos = refind * 6 + offs;
+        fmpos = fmpos % maxoffs; /* 指向下一轮 */
+        ind = fmpos/6;
+
+        ret = ind * 4 + (fmpos % 6) - 2;
+    }
+
+    return ret;
+}
+
+static int ak_pendcrc_getpos(akloc_context_t *lc, akdatf_seq_t *ref, akwire_seq_t ws)
+{
+    int offs;
+    int pos = -1;
+    int maxoffs;
+
+    maxoffs = lc->prslen + ((lc->prslen + 3)/4) * 2;
+
+    if (ws < ref->ws)
+    {//todo
+        AKLOG_D("ws-c overflow(%d, %d)", ws, ref->ws);
+    }
+    else
+    {
+        offs = (ws - ref->ws)/lc->seqstep;
+        if (offs > maxoffs)
+            return -1;
+        offs = offs + (ref->ind & 0x7f) * 6;
+        offs = offs % maxoffs;
+        pos = (offs/6) | 0x80;
+    }
+
+    return pos;
+}
+
+static void ak_dataconflict_add(akloc_context_t *lc, uint8_t pos, uint8_t d, int mode)
+{
+    unsigned i;
+    int zi = -1;
+    int s, e;
+
+    pos ++;
+    if (mode == 0)
+    {
+        s = 0;
+        e = sizeof(lc->dcfl.pos) - 4;
+    }
+    else
+    {
+        s = sizeof(lc->dcfl.pos) - 4;
+        e = sizeof(lc->dcfl.pos);
+    }
+
+    for (i = s; i < e; i ++)
+    {
+        if ((lc->dcfl.pos[i] == pos) && (lc->dcfl.data[i] == d))
+            return;
+        if (lc->dcfl.pos[i] == 0)
+            zi = i;
+    }
+
+    if (zi >= 0)
+    {
+        lc->dcfl.data[zi] = d;
+        lc->dcfl.pos[zi] = pos;
+    }
+}
+
+static int ak_dataconflict_getchar(akloc_context_t *lc, uint8_t pos, uint8_t *cpos)
+{
+    int ch = -1;
+    uint8_t i;
+
+    if (*cpos >= sizeof(lc->dcfl.pos))
+        return -1;
+
+    pos ++;
+    for (i = *cpos; i < sizeof(lc->dcfl.pos); i ++)
+    {
+        if (lc->dcfl.pos[i] == pos)
+        {
+            ch = lc->dcfl.data[i];
+            i ++;
+            break;
+        }
+    }
+
+    *cpos = i;
+
+    return ch;
+}
+
+static void ak_dataconflict_clear(akloc_context_t *lc, int pos)
+{
+    unsigned i;
+
+    if (pos < 0)
+    {
+        i = sizeof(lc->dcfl.pos) - 4;
+        for (; i < sizeof(lc->dcfl.pos); i ++)
+        {
+            lc->dcfl.pos[i] = 0;
+            lc->dcfl.data[i] = 0;
+        }
+    }
+    else
+    {
+        pos ++;
+        for (i = 0; i < sizeof(lc->dcfl.pos) - 4; i ++)
+        {
+            if (lc->dcfl.pos[i] == pos)
+            {
+                lc->dcfl.pos[i] = 0;
+                lc->dcfl.data[i] = 0;
+            }
+        }
+    }
+}
+
+static int _dataconflict_crccheck(akloc_context_t *lc, akdatf_header_t* pd, uint8_t dpos, char *d, int size)
+{
+    int ret = 0;
+    uint8_t crc;
+
+    crc = airkiss_crc8((uint8_t*)d, size + 1) & 0x7f;
+    if (crc == (pd->crc & 0x7f))
+    {
+        int pos;
+
+        pos = (pd->ind & 0x7f) * 4;
+        memcpy(&lc->data[pos], &d[1], size);
+        memset(pd, 0, sizeof(*pd));
+        lc->seq[(uint8_t)d[0]] = 1;
+        lc->reclen += size;
+        ak_dataconflict_clear(lc, dpos);
+        ret = 1;
+
+#ifdef AIRKISS_LOG_GDO_ENABLE
+        AKLOG_D("getdata-c(%d, %d)[%s]", d[0], size, &d[1]);
+#endif
+    }
+
+    return ret;
+}
+
+static int ak_dataconflict_crccheck(akloc_context_t *lc, akdatf_header_t* pd, int size)
+{
+    char d[6] = {0};
+    uint8_t spos;
+    uint8_t cflpos0 = 0, cflpos1 = 0, cflpos2 = 0, cflpos3 = 0;
+    int i;
+
+    d[0] = pd->ind & 0x7f;
+    spos = d[0] * 4;
+
+    /* 把所有冲突的数据都校验一遍 */
+
+    for (i = 0; i < size; i ++)
+    {
+        ak_dataconflict_add(lc, spos + i, lc->data[spos + i], 1);
+    }
+
+    while (size > 0)
+    {
+        int ch;
+
+        ch = ak_dataconflict_getchar(lc, spos + 0, &cflpos0);
+        if (ch < 0)
+            break;
+        d[1] = ch;
+        cflpos1 = 0;
+
+        while (size > 1)
+        {
+            int ch;
+
+            ch = ak_dataconflict_getchar(lc, spos + 1, &cflpos1);
+            if (ch < 0)
+                break;
+            d[2] = ch;
+            cflpos2 = 0;
+
+            while (size > 2)
+            {
+                int ch;
+
+                ch = ak_dataconflict_getchar(lc, spos + 2, &cflpos2);
+                if (ch < 0)
+                    break;
+                d[3] = ch;
+                cflpos3 = 0;
+
+                while (size > 3)
+                {
+                    int ch;
+
+                    ch = ak_dataconflict_getchar(lc, spos + 3, &cflpos3);
+                    if (ch < 0)
+                        break;
+                    d[4] = ch;
+
+                    if (_dataconflict_crccheck(lc, pd, spos + 3, d, size))
+                    {
+                        goto _out;
+                    }
+                }
+            }
+        }
+    }
+
+_out:
+    ak_dataconflict_clear(lc, -1);
+
+    return 0;
+}
+
+static int ak_dataconflict_input(akloc_context_t *lc, uint8_t ind, uint8_t pos, uint8_t data)
+{
+    int ret = 0;
+    int i;
+    int size;
+    int spos;
+    akdatf_header_t* pd;
+
+    spos = ind * 4;
+    size = lc->prslen - spos;
+    if (size > 4)
+        size = 4;
+
+    ak_dataconflict_add(lc, pos, data, 0);
+
+    /* 检查接收是否足够 */
+    for (i = 0; i < size; i ++)
+    {
+        if (lc->data[spos + i] == 0)
+        {
+            return 0;
+        }
+    }
+
+    /* 查找包头 */
+    pd = akseq_getpend(lc, ind | 0x80);
+    if (!pd)
+        return 0;
+
+    ret = ak_dataconflict_crccheck(lc, pd, size);
+
+    return ret;
+}
+
+static int ak_databody_input(akloc_context_t *lc, akdatf_seq_t *ref, akwire_seq_t ws, uint8_t data)
+{
+    int pos;
+    uint8_t ind;
+    uint8_t dif;
+
+    /* 与上一个帧相差太大则不接受 */
+    dif = (ws - lc->prews)/lc->seqstep;
+    if (dif > 5)
+        return 0;
+
+    pos = ak_penddata_getpos(lc, ref, ws);
+    if (pos < 0)
+    {
+        return 0;
+    }
+
+    ind = pos / 4;
+    if (lc->seq[ind])
+    {
+        return 0;
+    }
+
+#if AIRKISS_LOG_RIO_ENABLE
+    AKLOG_D("ref(%d %X) input(%d) %c", ref->ws, ref->ind, pos, data);
+#endif
+
+    if (lc->data[pos] == 0)
+    {
+        lc->data[pos] = data;
+        ak_pendinput_mark(lc, ind | 0x80);
+    }
+    else if (lc->data[pos] != data)
+    {
+        /* 出现数据冲突 */
+        ak_dataconflict_input(lc, ind, (uint8_t)pos, data);
+    }
+
+    return 1;
+}
+
+static void akseq_allocpend(akloc_context_t *lc, uint8_t crc, uint8_t ind)
+{
+    akdatf_header_t *found = 0, *idle = 0;
+    unsigned i;
+
+    if (lc->seq[ind & 0x7f])
+        return;
+
+    AKLOG_D("{%X %X}", crc, ind);
+    idle = &lc->pendseq[0];
+    for (i = 0; i < sizeof(lc->pendseq)/sizeof(lc->pendseq[0]); i ++)
+    {
+        akdatf_header_t *p = &lc->pendseq[i];
+
+        if (p->ind == ind)
+        {
+            found = p;
+            p->crc = crc;
+            break;
+        }
+
+        if (p->crc == 0)
+            idle = p;
+    }
+
+    if (found == NULL)
+    {
+        found = idle;
+        found->crc = crc;
+        found->ind = ind;
+    }
+}
+
+static void ak_datahead_input(akloc_context_t *lc, akdatf_seq_t *cur, akwire_seq_t ws, uint8_t head)
+{
+    int seqmax;
+    uint8_t dif;
+
+    seqmax = (lc->prslen/4) | 0x80;
+
+    if (cur->crc != 0)
+    {
+        dif = (ws - cur->ws)/lc->seqstep;
+
+        if (head <= seqmax)
+        {
+            cur->ind = head;
+            cur->ws = ws - lc->seqstep;
+            AKLOC_DFSEQ_PREV(lc) = *cur;
+
+            if (dif < 3)
+            {
+                /* 暂存包头 */
+                akseq_allocpend(lc, cur->crc, cur->ind);
+            }
+        }
+
+        if (head > seqmax)
+        {
+            cur->crc = head;
+            cur->ind = 0;
+            cur->ws = ws;
+        }
+    }
+    else
+    {
+        if (head > seqmax) //很大几率是crc
+        {
+            cur->crc = head;
+            cur->ws = ws;
+            cur->ind = 0;
+        }
+        else if (ak_pendcrc_getpos(lc, cur, ws) == head)
+        {
+            /* 没收到crc */
+            cur->ind = head;
+            cur->ws = ws - lc->seqstep; /* 设置crc的帧序号 */
+        }
+    }
+}
+
+static int ak_datainput_withwireseq(akloc_context_t *lc, uint8_t *f, uint16_t len)
+{
+    akwire_seq_t ws;
+    akdatf_seq_t *cur;
+
+    ws = akwseq_make(f + 22);
+    cur = &AKLOC_DFSEQ_CUR(lc);
+
+    if (len & 0x100) /* 输入数据 */
+    {
+        akdatf_seq_t *ref;
+
+        ref = &AKLOC_DFSEQ_PREV(lc);
+
+        if ((cur->ind == 0) && (cur->crc != 0))
+        {
+            int pos;
+
+            /* 如果只收到了crc就根据前一个包推测一个序号 */
+            pos = ak_pendcrc_getpos(lc, ref, ws);
+            if (pos > 0)
+            {
+                cur->ind = (uint8_t)pos;
+                akseq_allocpend(lc, cur->crc, cur->ind);
+            }
+        }
+
+        if (cur->ind)
+        {
+            if (!ak_databody_input(lc, cur, ws, len))
+            {
+                memset(&AKLOC_DFSEQ_CUR(lc), 0 , sizeof(*cur));
+            }
+
+            if (lc->reclen == lc->prslen)
+            {
+                lc->state = AKSTATE_CMP;
+            }
+        }
+
+        AKLOC_DFSEQ_CUR(lc).crc = 0;/* 标记已收到数据 */
+    }
+    else
+    {
+        /* 输入包头 */
+        ak_datahead_input(lc, cur, ws, len);
+    }
+
+    lc->prews = ws;
+
+    return 0;
+}
+
 static int ak_waitfor_datafield(akloc_context_t *lc, uint8_t *f, uint16_t len, int nossid)
 {
     int ret = AIRKISS_STATUS_CONTINUE;
@@ -708,7 +1068,9 @@ static int ak_waitfor_datafield(akloc_context_t *lc, uint8_t *f, uint16_t len, i
 
 #ifdef AIRKISS_LOG_DFDUMP_ENABLE
     if (f)
+    {
         akdata_dump(lc, f, udplen);
+    }
 #endif
 
     if (ak_datainput_onlylength(lc, ac, udplen))

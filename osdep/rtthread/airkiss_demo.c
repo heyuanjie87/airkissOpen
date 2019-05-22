@@ -10,7 +10,6 @@
 #define AKDEMO_BUFSZ 16
 
 static rt_list_t _bflist;
-static int _mbuf[AKDEMO_BUFSZ];
 static struct rt_mailbox _bfready;
 static int _akrun = 0;
 
@@ -48,11 +47,35 @@ static akbuf_t *ak_bufinit(int cnt)
     return buf;
 }
 
+static int _airkiss_filter(const void *f, int len)
+{
+    int ret = 0;
+    unsigned char *da, *p;
+    int i;
+
+    p = (unsigned char *)f;
+    if ((len < 25) || (p[0] != 0x08))
+        return 1;
+
+    da = p + 4;
+
+    for (i = 0; i < 6; i++)
+    {
+        if (da[i] != 0xFF)
+        {
+            ret = 1;
+            break;
+        }
+    }
+
+    return ret;
+}
+
 static void prom_callback(struct rt_wlan_device *device, void *d, int s)
 {
     akbuf_t *buf;
 
-    if (airkiss_filter(d, s))
+    if (_airkiss_filter(d, s))
         return;
 
     if (rt_list_isempty(&_bflist))
@@ -133,10 +156,16 @@ static int ak_recv_chn(struct rt_wlan_device *dev,
     t = chn->cnt * chn->cnt * chn->cnt;
     if (t)
     {
-        if (t > 160)
-            t = 160;
-        chn->tm = 40 + t;
+        if (t > 170)
+            t = 170;
+        chn->tm = 30 + t;
         rt_kprintf("tm %d on chn %d\n", chn->tm, chn->n);
+    }
+
+    if (chn->cnt > 4)
+    {
+        chn->cnt -= 2;
+        chn->tm -= (chn->tm/8);
     }
 
     return status;
@@ -239,20 +268,22 @@ _exit:
     }
 }
 
-static void airkiss_thread(void *p)
+static void do_airkiss_configwifi(void)
 {
     airkiss_context_t ac;
     struct rt_wlan_device *dev;
     akbuf_t *pbuf;
     int n;
     akchn_t chns[13];
-    int round = 80;
+    int round = 120;
     airkiss_config_t acfg =
         {
             (airkiss_memset_fn)&rt_memset,
             (airkiss_memcpy_fn)&rt_memcpy,
             (airkiss_memcmp_fn)&rt_memcmp,
-            0};
+            (airkiss_printf_fn)&rt_kprintf
+        };
+    int _mbuf[AKDEMO_BUFSZ];
 
     rt_kprintf("airkiss thread start\n");
     if ((pbuf = ak_bufinit(AKDEMO_BUFSZ)) == RT_NULL)
@@ -307,6 +338,11 @@ _out:
     _akrun = 0;
 
     rt_kprintf("airkiss exit\n");
+}
+
+static void airkiss_thread(void *p)
+{
+    do_airkiss_configwifi();
 }
 
 int airkiss_demo_start(void)
@@ -391,6 +427,7 @@ static void airkiss_thread_cap(void *p)
     struct rt_wlan_device *dev;
     akbuf_t *pbuf;
     akchn_t chns[14];
+    int _mbuf[AKDEMO_BUFSZ];
 
     if ((pbuf = ak_bufinit(AKDEMO_BUFSZ)) == RT_NULL)
     {

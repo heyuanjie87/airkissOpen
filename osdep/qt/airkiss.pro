@@ -8,7 +8,10 @@ QT       += core gui
 
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets network
 
-DEFINES += AIRKISS_LOG_ENABLE
+DEFINES += AIRKISS_LOG_ENABLE \
+           AIRKISS_LOG_DFDUMP_ENABLE \
+           AIRKISS_LOG_GDO_ENABLE
+
 TARGET = airkiss
 TEMPLATE = app
 DESTDIR = ../../doc
