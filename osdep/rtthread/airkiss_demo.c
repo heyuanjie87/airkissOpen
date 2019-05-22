@@ -101,6 +101,7 @@ static int ak_recv(airkiss_context_t *ac, int ms, int *rcnt)
     akbuf_t *buf = 0;
     int status = AIRKISS_STATUS_CONTINUE;
     rt_tick_t st, max;
+    int len = 0;
 
     st = rt_tick_get();
 
@@ -108,22 +109,22 @@ static int ak_recv(airkiss_context_t *ac, int ms, int *rcnt)
     {
         if (rt_mb_recv(&_bfready, (rt_ubase_t *)&buf, rt_tick_from_millisecond(10)) == 0)
         {
-            //rt_kprintf("%d\n", buf->fmlen);
-
             status = airkiss_recv(ac, buf->f, buf->fmlen);
             rt_list_insert_after(&_bflist, &buf->list);
             if (status != AIRKISS_STATUS_CONTINUE)
                 break;
 
-            (*rcnt)++;
-            /* 收到数据奖励时间 */
-            if (ms < 140)
-                ms += 12;
+            if (rcnt && (buf->fmlen != len))
+            {
+                (*rcnt)++;
+                len = buf->fmlen;
+                if (ms < 180)
+                    ms += 12;
+            }
         }
         else
         {
-            /* 超时后进行时间惩罚 */
-            if (ms > 40)
+            if ((ms > 30) && rcnt)
                 ms -= 2;
         }
 
@@ -146,26 +147,25 @@ static int ak_recv_chn(struct rt_wlan_device *dev,
     airkiss_change_channel(ac);
 
     status = ak_recv(ac, chn->tm, &rcnt);
+
     if (status == AIRKISS_STATUS_CHANNEL_LOCKED)
     {
         rt_kprintf("airkiss locked chn %d\n", chn->n);
-        status = ak_recv(ac, 1000 * 30, &rcnt);
+        status = ak_recv(ac, 1000 * 30, RT_NULL);
     }
 
     chn->cnt += rcnt;
+    if (chn->cnt > 5)
+        chn->cnt -= 3;
     t = chn->cnt * chn->cnt * chn->cnt;
+
     if (t)
     {
         if (t > 170)
             t = 170;
         chn->tm = 30 + t;
-        rt_kprintf("tm %d on chn %d\n", chn->tm, chn->n);
-    }
 
-    if (chn->cnt > 4)
-    {
-        chn->cnt -= 2;
-        chn->tm -= (chn->tm/8);
+        rt_kprintf("tm(%d) cnt(%d) on chn %d\n", chn->tm, chn->cnt, chn->n);
     }
 
     return status;
@@ -281,8 +281,7 @@ static void do_airkiss_configwifi(void)
             (airkiss_memset_fn)&rt_memset,
             (airkiss_memcpy_fn)&rt_memcpy,
             (airkiss_memcmp_fn)&rt_memcmp,
-            (airkiss_printf_fn)&rt_kprintf
-        };
+            (airkiss_printf_fn)&rt_kprintf};
     int _mbuf[AKDEMO_BUFSZ];
 
     rt_kprintf("airkiss thread start\n");
@@ -295,6 +294,7 @@ static void do_airkiss_configwifi(void)
     airkiss_init(&ac, &acfg);
 
     rt_mb_init(&_bfready, "ak", _mbuf, AKDEMO_BUFSZ, 0);
+    rt_wlan_config_autoreconnect(0);
     rt_wlan_disconnect();
     dev = (struct rt_wlan_device *)rt_device_find(RT_WLAN_DEVICE_STA_NAME);
     rt_wlan_dev_set_promisc_callback(dev, prom_callback);
@@ -333,6 +333,7 @@ static void do_airkiss_configwifi(void)
 
 _out:
     rt_wlan_dev_set_promisc_callback(dev, RT_NULL);
+    rt_wlan_config_autoreconnect(1);
     rt_mb_detach(&_bfready);
     rt_free(pbuf);
     _akrun = 0;
@@ -439,6 +440,7 @@ static void airkiss_thread_cap(void *p)
 
     rt_mb_init(&_bfready, "ak", _mbuf, AKDEMO_BUFSZ, 0);
     rt_wlan_disconnect();
+    rt_wlan_config_autoreconnect(0);
     dev = (struct rt_wlan_device *)rt_device_find(RT_WLAN_DEVICE_STA_NAME);
     rt_wlan_dev_set_promisc_callback(dev, prom_callback);
 
