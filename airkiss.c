@@ -10,16 +10,19 @@
 
 #include "airkiss.h"
 
-#include <string.h>
 #include <stdint.h>
 
 #ifdef AIRKISS_LOG_ENABLE
-#define AKLOG_D                     \
-    if (lc->cfg && lc->cfg->printf) \
-    lc->cfg->printf
+#define AKLOG_D(fmt, ...)  lc->cfg->printf(fmt, ##__VA_ARGS__)
 #else
 #define AKLOG_D(...)
 #endif
+
+#define NULL 0
+
+#define AKMEMCPY(dst, src, len) lc->cfg->memcpy(dst, src, len)
+#define AKMEMSET(ptr, value, len) lc->cfg->memset(ptr, value, len)
+#define AKMEMCMP(ptr1, ptr2, len) lc->cfg->memcmp(ptr1, ptr2, len)
 
 #define AKSTATE_WFG 0
 #define AKSTATE_WFM 1
@@ -143,7 +146,7 @@ static void akloc_reset(akloc_context_t *lc)
     const airkiss_config_t *cfg;
 
     cfg = lc->cfg;
-    memset(lc, 0, sizeof(*lc));
+    AKMEMSET(lc, 0, sizeof(*lc));
     lc->cfg = cfg;
 }
 
@@ -204,7 +207,7 @@ static int ak_magicfield_input(akcode_t *ac, uint16_t len)
 
 static int ak_get_prefixfield(akloc_context_t *lc, akcode_t *ac)
 {
-    int ret;
+    int ret = 1;
     uint8_t crc;
 
     lc->pwdlen = akinfo_getu8(&ac->val[0]);
@@ -270,7 +273,7 @@ static int ak_get_datafield(akloc_context_t *lc, akcode_t *ac)
     ret = ((airkiss_crc8(&tmp[1], n + 1) & 0x7F) == tmp[0]);
     if (ret)
     {
-        memcpy(&lc->data[pos], &tmp[2], n);
+        AKMEMCPY(&lc->data[pos], &tmp[2], n);
         lc->reclen += n;
         lc->seq[seqi] = 1;
 
@@ -313,7 +316,7 @@ static akcode_guide_t *ak_guide_getcode(akloc_context_t *lc, unsigned char *f)
         for (i = 0; i < sizeof(lc->uc.code1) / sizeof(lc->uc.code1[0]); i++)
         {
             /* 匹配地址 */
-            found = !memcmp(&sa, &ac->sa, sizeof(ac->sa));
+            found = !AKMEMCMP(&sa, &ac->sa, sizeof(ac->sa));
             if (found)
                 break;
             /* 记录权值最小的 */
@@ -393,7 +396,7 @@ static int ak_waitfor_guidefield(akloc_context_t *lc, uint8_t *f, uint16_t len)
         if (lc->state == AKSTATE_WFM)
         {
             lc->locked = ac->sa;
-            memset(&lc->uc, 0, sizeof(lc->uc));
+            AKMEMSET(&lc->uc, 0, sizeof(lc->uc));
             ret = AIRKISS_STATUS_CHANNEL_LOCKED;
         }
     }
@@ -588,11 +591,11 @@ static int ak_pendinput_mark(akloc_context_t *lc, uint8_t ind)
         }
 
         d[0] = ind;
-        memcpy(&d[1], &lc->data[pos], size);
+        AKMEMCPY(&d[1], &lc->data[pos], size);
         crc = airkiss_crc8((uint8_t*)d, size + 1) & 0x7f;
         if (crc == (pd->crc & 0x7f))
         {
-            memset(pd, 0, sizeof(*pd));
+            AKMEMSET(pd, 0, sizeof(*pd));
             lc->seq[ind] = 1;
             lc->reclen += size;
             ret = 1;
@@ -759,8 +762,8 @@ static int _dataconflict_crccheck(akloc_context_t *lc, akdatf_header_t* pd, uint
         int pos;
 
         pos = (pd->ind & 0x7f) * 4;
-        memcpy(&lc->data[pos], &d[1], size);
-        memset(pd, 0, sizeof(*pd));
+        AKMEMCPY(&lc->data[pos], &d[1], size);
+        AKMEMSET(pd, 0, sizeof(*pd));
         lc->seq[(uint8_t)d[0]] = 1;
         lc->reclen += size;
         ak_dataconflict_clear(lc, dpos);
@@ -1032,7 +1035,7 @@ static int ak_datainput_withwireseq(akloc_context_t *lc, uint8_t *f, uint16_t le
         {
             if (!ak_databody_input(lc, cur, ws, len))
             {
-                memset(&AKLOC_DFSEQ_CUR(lc), 0 , sizeof(*cur));
+                AKMEMSET(&AKLOC_DFSEQ_CUR(lc), 0 , sizeof(*cur));
             }
 
             if (lc->reclen == lc->prslen)
@@ -1116,7 +1119,7 @@ static int ak_sa_filter(akloc_context_t *lc, uint8_t *f)
         akaddr_t sa;
 
         akaddr_fromframe(&sa, f);
-        ret = memcmp(&lc->locked, &sa, sizeof(sa));
+        ret = AKMEMCMP(&lc->locked, &sa, sizeof(sa));
     }
 
     return ret;
@@ -1201,6 +1204,18 @@ int airkiss_init(airkiss_context_t *c, const airkiss_config_t *config)
 {
     akloc_context_t *lc = (akloc_context_t *)c;
 
+    if (!c
+        | !config
+        | !config->memcpy
+        | !config->memset
+        | !config->memcmp
+#ifdef AIRKISS_LOG_ENABLE
+        | !config->printf
+#endif /* AIRKISS_LOG_ENABLE */
+        )
+    {
+        return -1;
+    }
     lc->cfg = config;
     akloc_reset(lc);
 
